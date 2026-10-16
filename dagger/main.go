@@ -24,7 +24,9 @@ import (
 )
 
 const (
-	dockerCLIImage       = "docker:29.9-cli"
+	// Pinned by digest: with a bare tag Dagger re-resolves it against Docker Hub
+	// on every call, which on a cold engine or slow link adds minutes.
+	dockerCLIImage       = "docker:29.9-cli@sha256:1a4c7cb63513f349bdad01fcc6e0f3f2f67d37b9da86f14dc0d4a0942eecda00"
 	observabilityNetwork = "platform-observability"
 
 	appProject        = "uptime-app"
