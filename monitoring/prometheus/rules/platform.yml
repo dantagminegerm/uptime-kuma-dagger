@@ -1,0 +1,60 @@
+groups:
+  - name: platform-health
+    rules:
+      - alert: ScrapeTargetDown
+        expr: up == 0
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "Scrape target {{ $labels.job }}/{{ $labels.instance }} is down"
+
+      - alert: UptimeKumaDown
+        expr: probe_success{service="uptime-kuma"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "Uptime Kuma does not answer HTTP"
+
+      - alert: WebServiceSlow
+        expr: probe_duration_seconds{job="blackbox-http"} > 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.service }} responds slower than 1s"
+
+      - alert: MariaDBDown
+        expr: mysql_up == 0 or probe_success{service="mariadb"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "MariaDB is unreachable"
+
+      - alert: MariaDBTooManyConnections
+        expr: mysql_global_status_threads_connected / mysql_global_variables_max_connections > 0.8
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "MariaDB uses more than 80% of max_connections"
+
+      - alert: ContainerHighMemory
+        expr: |
+          container_memory_working_set_bytes{name!=""}
+            / (container_spec_memory_limit_bytes{name!=""} > 0) > 0.9
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Container {{ $labels.name }} is above 90% of its memory limit"
+
+      - alert: HostHighCPU
+        expr: 1 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) > 0.9
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Host CPU usage above 90%"
+
+      - alert: HostLowDiskSpace
+        expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Less than 10% disk space left on /"

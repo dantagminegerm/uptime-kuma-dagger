@@ -1,0 +1,92 @@
+# Layer 1 — application: Uptime Kuma backed by a single MariaDB node.
+# Deployed by `dagger call deploy-app`; secrets are injected by Dagger as
+# environment variables and never stored in this repository.
+name: uptime-app
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  mariadb:
+    image: mariadb:11.8
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD_FILE: /run/secrets/mariadb_root_password
+      MARIADB_DATABASE: uptime_kuma
+      MARIADB_USER: uptime_kuma
+      MARIADB_PASSWORD_FILE: /run/secrets/mariadb_password
+      MARIADB_ROOT_HOST: localhost # no remote root login
+      MARIADB_AUTO_UPGRADE: "1"
+    secrets:
+      - mariadb_root_password
+      - mariadb_password
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    # No published ports: the DB is reachable only from Uptime Kuma (backend)
+    # and the metrics exporter (observability). Both networks are internal.
+    networks:
+      - backend
+      - observability
+    logging: *logging
+
+  uptime-kuma:
+    image: louislam/uptime-kuma:2.5.6
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment:
+      UPTIME_KUMA_DB_TYPE: mariadb
+      UPTIME_KUMA_DB_HOSTNAME: mariadb
+      UPTIME_KUMA_DB_PORT: "3306"
+      UPTIME_KUMA_DB_NAME: uptime_kuma
+      UPTIME_KUMA_DB_USERNAME: uptime_kuma
+      UPTIME_KUMA_DB_PASSWORD: ${MARIADB_PASSWORD:?MARIADB_PASSWORD is required}
+    volumes:
+      - uptime-kuma-data:/app/data
+    ports:
+      - "127.0.0.1:3001:3001"
+    # The image ships its own HEALTHCHECK; give migrations time on first boot.
+    healthcheck:
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    networks:
+      - default # egress: Uptime Kuma must reach the sites it monitors
+      - backend
+      - observability
+    logging: *logging
+
+secrets:
+  mariadb_root_password:
+    environment: MARIADB_ROOT_PASSWORD
+  mariadb_password:
+    environment: MARIADB_PASSWORD
+
+volumes:
+  mariadb-data:
+  uptime-kuma-data:
+
+networks:
+  default:
+  backend:
+    internal: true
+  # Shared with the monitoring layer; created (internal) by Dagger.
+  observability:
+    name: platform-observability
+    external: true
