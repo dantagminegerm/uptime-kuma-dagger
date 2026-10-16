@@ -17,7 +17,6 @@ dagger call deploy-all
 [Проверка работоспособности](#проверка-работоспособности) ·
 [Архитектура](#архитектура) ·
 [Dagger-модуль](#dagger-модуль) ·
-[Безопасность](#безопасность)
 
 ## Архитектура
 
@@ -82,65 +81,6 @@ Prometheus также загружает правила алертов (`monitor
 | `dagger call validate` | Проверяет здоровье контейнеров, что все таргеты Prometheus в состоянии `up`, `probe_success` и `mysql_up`, HTTP Uptime Kuma, data source и дашборд в Grafana. При любой ошибке выходит с ненулевым кодом |
 | `dagger call destroy [--volumes]` | Удаляет оба слоя; с `--volumes` удаляет и данные |
 
-### Как Dagger управляет Docker
-
-Каждая функция запускает контейнер `docker:29.9-cli` с хостовым сокетом,
-подключённым через `WithUnixSocket` (аргумент модуля `--sock`), и выполняет
-`docker compose` для нужного слоя. В контейнер монтируются только `app/`,
-`monitoring/` и `grafana/`: фильтр `+ignore` не отправляет в движок Dagger ни
-`.secrets/`, ни `.git`.
-
-Compose работает внутри контейнера, а демон — на хосте, поэтому bind-mount
-файлов репозитория не работал бы: пути разрешались бы на хосте. Поэтому
-конфиг Prometheus вшивается в локально собираемый образ (`build:` передаёт
-контекст по сокету), секреты передаются как compose `secrets` из окружения,
-а у blackbox-exporter используется встроенный конфиг (модули `http_2xx` и
-`tcp_connect`).
-
-`configure-grafana` и `validate` обращаются к Grafana, Prometheus и Uptime
-Kuma на `localhost` хоста через Dagger-туннели: аргументы-сервисы
-`--grafana=tcp://localhost:3000` и т. п. Поэтому порты наружу публикуются
-только на `127.0.0.1`.
-
-Все функции помечены `+cache="never"`, а exec-шаги получают cache-buster,
-потому что работают с живым состоянием хоста и не должны браться из кэша Dagger.
-
-### Аргументы и `.env`
-
-Все аргументы модуля по умолчанию берутся из `.env` в корне
-([Dagger local defaults](https://docs.dagger.io/features/local-defaults)).
-Поэтому команды запускаются без флагов. В `.env` **нет значений секретов**,
-только ссылки на провайдеры:
-
-```dotenv
-SOCK=/var/run/docker.sock
-GRAFANA=tcp://localhost:3000
-DbPassword=cmd://"sh scripts/secret.sh mariadb_password"
-...
-```
-
-Ключи сопоставляются с именами аргументов без учёта регистра, но
-**без подчёркиваний**: `DbPassword`, а не `DB_PASSWORD`. Подчёркивание Dagger
-считает разделителем `FUNCTION_ARG`.
-
-`scripts/secret.sh` при первом обращении генерирует случайный 32-символьный
-пароль в `.secrets/<name>` (каталог в `.gitignore`, права `0600`), а дальше
-возвращает его же. Любое значение можно переопределить флагом:
-
-```bash
-dagger call --grafana-password=env://MY_GRAFANA_PASSWORD deploy-monitoring
-```
-
-## Безопасность
-
-* Секреты нигде не хранятся в репозитории и не попадают в логи Dagger: это тип `Secret`, они передаются через `WithSecretVariable`.
-* MariaDB и Grafana читают пароли из файлов compose secrets (`*_FILE` / `__FILE`), а не из переменных окружения.
-* У MariaDB нет опубликованных портов. Сети `backend` и `platform-observability` помечены `internal`: без выхода в интернет и без доступа с хоста. Выход наружу есть только у Uptime Kuma (ей нужно проверять внешние сайты) и у Prometheus/Grafana.
-* Наружу открыты только UI-порты, и только на `127.0.0.1`.
-* `mysqld-exporter` подключается под учёткой `exporter` с правами `PROCESS, REPLICATION CLIENT, SLAVE MONITOR` и `SELECT` только на `performance_schema`, с ограничением `MAX_USER_CONNECTIONS 3`. Доступа к данным Uptime Kuma у неё нет.
-* В Grafana отключены регистрация, анонимный доступ, телеметрия и gravatar. Cookie выставляются с `SameSite=strict`.
-* Версии всех образов зафиксированы, у контейнеров есть лимиты памяти (у приложения) и ротация логов.
-
 ## Подготовка окружения
 
 Что нужно:
@@ -149,10 +89,8 @@ dagger call --grafana-password=env://MY_GRAFANA_PASSWORD deploy-monitoring
 |---|---|---|
 | Docker Engine + Compose v2 | 24+ (проверено на 29.9) | на хосте работают оба слоя |
 | Dagger CLI | 0.21.x (модуль закреплён на `v0.21.10`) | управляет жизненным циклом |
-| git, curl, jq | любые | клонирование и ручные проверки |
-| Go | не нужен | Go SDK собирает модуль в контейнере. Локальный Go пригодится только для правки кода в IDE |
 
-Ресурсы: 2+ CPU, 4+ ГБ RAM и около 8 ГБ свободного диска (образы стека и движок Dagger).
+Ресурсы: 2+ CPU, 4+ ГБ RAM и около 6 ГБ свободного диска (образы стека и движок Dagger).
 
 ### Ubuntu / Debian
 
@@ -163,8 +101,7 @@ dagger call --grafana-password=env://MY_GRAFANA_PASSWORD deploy-monitoring
    ```
 
 2. Docker Engine из официального репозитория Docker
-   ([документация](https://docs.docker.com/engine/install/ubuntu/)). Для Debian
-   замените `ubuntu` на `debian` в обеих ссылках:
+   ([документация](https://docs.docker.com/engine/install/ubuntu/)). 
 
    ```bash
    sudo install -m 0755 -d /etc/apt/keyrings
@@ -199,23 +136,6 @@ dagger call --grafana-password=env://MY_GRAFANA_PASSWORD deploy-monitoring
    dagger version
    ```
 
-### macOS
-
-```bash
-brew install --cask docker   # Docker Desktop; запустите его один раз из Applications
-brew install dagger/tap/dagger jq
-docker compose version && dagger version
-```
-
-### Windows 10/11
-
-1. Установите [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/)
-   с бэкендом WSL 2 и включите интеграцию со своим дистрибутивом:
-   *Settings → Resources → WSL integration*.
-2. В PowerShell от администратора: `wsl --install -d Ubuntu`.
-3. Дальше работайте **внутри WSL** (Ubuntu): выполните шаги 1 и 4 из раздела
-   про Ubuntu. Docker Engine внутри WSL ставить не нужно, его даёт Docker Desktop.
-   Репозиторий клонируйте в файловую систему WSL (`~/…`), а не в `/mnt/c/…`.
 
 ### Получение проекта
 
@@ -405,11 +325,3 @@ docker start uptime-app-uptime-kuma-1
 └── scripts/secret.sh           # генерация и хранение локальных секретов
 ```
 
-## Замечания
-
-* Под Docker Desktop (macOS / Windows) часть метрик хоста и cAdvisor
-  относится к служебной VM Docker Desktop, а не к физической машине.
-* Метрики самой Uptime Kuma (`/metrics`) закрыты аутентификацией и требуют
-  API-ключа, который создаётся в UI после первичной настройки. Поэтому статус
-  сервиса снимается внешней HTTP-пробой. Это ближе к тому, как сервис видит
-  пользователь.
